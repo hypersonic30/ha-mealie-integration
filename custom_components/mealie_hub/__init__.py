@@ -6,11 +6,31 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
-from .views import ImportView, RecipeDetailView, RecipeImageView, RecipesView
+from .views import (
+    ImportView,
+    RecipeDetailView,
+    RecipeImageView,
+    RecipesView,
+    RecipeTagsView,
+    RecipeToShoppingListView,
+    ShoppingListItemView,
+    ShoppingListView,
+    TagsView,
+)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-_VIEWS = (RecipesView, RecipeDetailView, RecipeImageView, ImportView)
+_VIEWS = (
+    RecipesView,
+    RecipeDetailView,
+    RecipeImageView,
+    ImportView,
+    TagsView,
+    RecipeTagsView,
+    ShoppingListView,
+    ShoppingListItemView,
+    RecipeToShoppingListView,
+)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

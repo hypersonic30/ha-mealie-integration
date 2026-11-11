@@ -32,6 +32,10 @@ class UpstreamError(Exception):
         self.message = message
 
 
+class NoShoppingListError(Exception):
+    """Raised when the household has no shopping list yet (create one in Mealie first)."""
+
+
 def get_config(hass: HomeAssistant) -> dict:
     """The live config entry data — updated on reconfigure without a restart."""
     return hass.data.get(DOMAIN, {}).get("config", {})
@@ -66,12 +70,21 @@ class MealieClient:
     def _session(self) -> aiohttp.ClientSession:
         return async_get_clientsession(self._hass, verify_ssl=self._verify_ssl)
 
-    async def _request(self, method: str, path: str, *, json: Any = None, timeout: float = REQUEST_TIMEOUT) -> Any:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        params: Any = None,
+        timeout: float = REQUEST_TIMEOUT,
+    ) -> Any:
         async with self._session.request(
             method,
             f"{self.base_url}{path}",
             headers=self._headers,
             json=json,
+            params=params,
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
             if resp.status >= 400:
@@ -81,22 +94,45 @@ class MealieClient:
                 return None
             return await resp.json()
 
-    async def list_recipes(self, *, page: int = 1, per_page: int = 50, search: str = "") -> Any:
-        params = {"page": page, "perPage": per_page}
+    async def list_recipes(
+        self, *, page: int = 1, per_page: int = 50, search: str = "", tags: list[str] | None = None
+    ) -> Any:
+        params: list[tuple[str, str]] = [("page", str(page)), ("perPage", str(per_page))]
         if search:
-            params["search"] = search
-        async with self._session.get(
-            f"{self.base_url}/api/recipes",
-            headers=self._headers,
-            params=params,
-            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
-        ) as resp:
-            if resp.status >= 400:
-                raise UpstreamError(resp.status, await resp.text())
-            return await resp.json()
+            params.append(("search", search))
+        for tag in tags or []:
+            params.append(("tags", tag))
+        return await self._request("GET", "/api/recipes", params=params)
 
     async def get_recipe(self, slug: str) -> Any:
         return await self._request("GET", f"/api/recipes/{slug}")
+
+    async def list_tags(self) -> Any:
+        return await self._request("GET", "/api/organizers/tags", params={"perPage": 200})
+
+    async def set_recipe_tags(self, slug: str, tag_names: list[str]) -> Any:
+        """Replaces a recipe's whole tag list (Mealie has no add/remove-one endpoint)."""
+        return await self._request("PATCH", f"/api/recipes/{slug}", json={"tags": [{"name": t} for t in tag_names]})
+
+    async def shopping_lists(self) -> Any:
+        return await self._request("GET", "/api/households/shopping/lists")
+
+    async def shopping_list(self, list_id: str) -> Any:
+        return await self._request("GET", f"/api/households/shopping/lists/{list_id}")
+
+    async def add_recipe_to_shopping_list(self, list_id: str, recipe_id: str) -> Any:
+        # Mealie's wire format is camelCase per its source (a camelize alias
+        # generator), but that is not confirmed live — both casings are sent
+        # so an unverified guess here doesn't silently drop the field.
+        return await self._request(
+            "POST",
+            f"/api/households/shopping/lists/{list_id}/recipe",
+            json=[{"recipeId": recipe_id, "recipe_id": recipe_id}],
+        )
+
+    async def set_shopping_item(self, item: dict) -> Any:
+        """`item` is a full item dict from `shopping_list()`, with `checked` already updated — Mealie's item PUT is unconfirmed as partial-update, so the whole known object is sent back."""
+        return await self._request("PUT", f"/api/households/shopping/items/{item['id']}", json=item)
 
     def image_url(self, recipe_id: str) -> str:
         """Mealie serves the original recipe image at this path (not yet confirmed against every Mealie version)."""
@@ -138,6 +174,15 @@ class SocialClient:
             if resp.status >= 400:
                 raise UpstreamError(resp.status, body.get("error", str(body)))
             return body
+
+
+async def default_shopping_list_id(client: MealieClient) -> str:
+    """The household's first shopping list — picking a specific one isn't exposed yet."""
+    data = await client.shopping_lists()
+    items = data.get("items", [])
+    if not items:
+        raise NoShoppingListError
+    return items[0]["id"]
 
 
 def mealie_client(hass: HomeAssistant) -> MealieClient:

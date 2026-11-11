@@ -14,7 +14,7 @@ from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
-from .api import UpstreamError, mealie_client, needs_social, social_client
+from .api import NoShoppingListError, UpstreamError, default_shopping_list_id, mealie_client, needs_social, social_client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,8 +30,10 @@ class RecipesView(HomeAssistantView):
     async def get(self, request: web.Request) -> web.Response:
         page = int(request.query.get("page", "1"))
         search = request.query.get("search", "")
+        tags_param = request.query.get("tags", "")
+        tags = [t for t in tags_param.split(",") if t] or None
         try:
-            data = await mealie_client(self._hass).list_recipes(page=page, search=search)
+            data = await mealie_client(self._hass).list_recipes(page=page, search=search, tags=tags)
         except UpstreamError as err:
             return web.json_response({"error": err.message}, status=err.status)
         for item in data.get("items", []):
@@ -114,3 +116,106 @@ class ImportView(HomeAssistantView):
             return web.json_response({"error": err.message}, status=err.status)
 
         return web.json_response({"slug": slug})
+
+
+class TagsView(HomeAssistantView):
+    url = "/api/mealie_hub/tags"
+    name = "api:mealie_hub:tags"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        try:
+            data = await mealie_client(self._hass).list_tags()
+        except UpstreamError as err:
+            return web.json_response({"error": err.message}, status=err.status)
+        return web.json_response(data)
+
+
+class RecipeTagsView(HomeAssistantView):
+    url = "/api/mealie_hub/recipes/{slug}/tags"
+    name = "api:mealie_hub:recipe_tags"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def patch(self, request: web.Request, slug: str) -> web.Response:
+        body = await request.json()
+        tags = (body or {}).get("tags", [])
+        try:
+            result = await mealie_client(self._hass).set_recipe_tags(slug, tags)
+        except UpstreamError as err:
+            return web.json_response({"error": err.message}, status=err.status)
+        return web.json_response(result)
+
+
+class ShoppingListView(HomeAssistantView):
+    url = "/api/mealie_hub/shopping-list"
+    name = "api:mealie_hub:shopping_list"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get(self, request: web.Request) -> web.Response:
+        client = mealie_client(self._hass)
+        try:
+            list_id = await default_shopping_list_id(client)
+            data = await client.shopping_list(list_id)
+        except NoShoppingListError:
+            return web.json_response({"error": "no_shopping_list"}, status=404)
+        except UpstreamError as err:
+            return web.json_response({"error": err.message}, status=err.status)
+        # Mealie's wire casing for this field isn't confirmed live; accept either.
+        items = data.get("listItems", data.get("list_items", []))
+        return web.json_response({"id": data.get("id"), "name": data.get("name"), "items": items})
+
+
+class ShoppingListItemView(HomeAssistantView):
+    url = "/api/mealie_hub/shopping-list/items/{item_id}"
+    name = "api:mealie_hub:shopping_list_item"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def put(self, request: web.Request, item_id: str) -> web.Response:
+        body = await request.json()
+        client = mealie_client(self._hass)
+        try:
+            list_id = await default_shopping_list_id(client)
+            data = await client.shopping_list(list_id)
+            items = data.get("listItems", data.get("list_items", []))
+            item = next((i for i in items if i.get("id") == item_id), None)
+            if item is None:
+                return web.json_response({"error": "item_not_found"}, status=404)
+            item["checked"] = bool((body or {}).get("checked", False))
+            result = await client.set_shopping_item(item)
+        except NoShoppingListError:
+            return web.json_response({"error": "no_shopping_list"}, status=404)
+        except UpstreamError as err:
+            return web.json_response({"error": err.message}, status=err.status)
+        return web.json_response(result)
+
+
+class RecipeToShoppingListView(HomeAssistantView):
+    url = "/api/mealie_hub/recipes/{recipe_id}/shopping-list"
+    name = "api:mealie_hub:recipe_to_shopping_list"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def post(self, request: web.Request, recipe_id: str) -> web.Response:
+        client = mealie_client(self._hass)
+        try:
+            list_id = await default_shopping_list_id(client)
+            result = await client.add_recipe_to_shopping_list(list_id, recipe_id)
+        except NoShoppingListError:
+            return web.json_response({"error": "no_shopping_list"}, status=404)
+        except UpstreamError as err:
+            return web.json_response({"error": err.message}, status=err.status)
+        return web.json_response(result)

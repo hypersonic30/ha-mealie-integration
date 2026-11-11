@@ -80,3 +80,83 @@ async def test_import_upstream_error_is_forwarded(hass, setup_entry, hass_client
     client = await hass_client()
     resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
     assert resp.status == 500
+
+
+async def test_recipes_forwards_tag_filter(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/recipes", json={"items": []})
+    client = await hass_client()
+    resp = await client.get("/api/mealie_hub/recipes?tags=vegan,quick")
+    assert resp.status == 200
+    _, url, _, _ = aioclient_mock.mock_calls[-1]
+    assert url.query.getall("tags") == ["vegan", "quick"]
+
+
+async def test_tags_list(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/organizers/tags", json={"items": [{"id": "t1", "name": "vegan", "slug": "vegan"}]})
+    client = await hass_client()
+    resp = await client.get("/api/mealie_hub/tags")
+    assert resp.status == 200
+    assert (await resp.json())["items"][0]["name"] == "vegan"
+
+
+async def test_set_recipe_tags(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.patch(f"{MEALIE}/api/recipes/soup", json={"slug": "soup", "tags": [{"name": "vegan"}]})
+    client = await hass_client()
+    resp = await client.patch("/api/mealie_hub/recipes/soup/tags", json={"tags": ["vegan"]})
+    assert resp.status == 200
+    _, _, body, _ = aioclient_mock.mock_calls[-1]
+    assert body == {"tags": [{"name": "vegan"}]}
+
+
+async def test_shopping_list_returns_items(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": [{"id": "l1"}]})
+    aioclient_mock.get(
+        f"{MEALIE}/api/households/shopping/lists/l1",
+        json={"id": "l1", "name": "Einkaufsliste", "listItems": [{"id": "i1", "display": "1 Banane", "checked": False}]},
+    )
+    client = await hass_client()
+    resp = await client.get("/api/mealie_hub/shopping-list")
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["items"][0]["display"] == "1 Banane"
+
+
+async def test_shopping_list_missing_is_404(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": []})
+    client = await hass_client()
+    resp = await client.get("/api/mealie_hub/shopping-list")
+    assert resp.status == 404
+    assert (await resp.json())["error"] == "no_shopping_list"
+
+
+async def test_check_shopping_item(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": [{"id": "l1"}]})
+    aioclient_mock.get(
+        f"{MEALIE}/api/households/shopping/lists/l1",
+        json={"id": "l1", "listItems": [{"id": "i1", "display": "1 Banane", "checked": False}]},
+    )
+    aioclient_mock.put(f"{MEALIE}/api/households/shopping/items/i1", json={"id": "i1", "checked": True})
+    client = await hass_client()
+    resp = await client.put("/api/mealie_hub/shopping-list/items/i1", json={"checked": True})
+    assert resp.status == 200
+    _, _, body, _ = aioclient_mock.mock_calls[-1]
+    assert body["checked"] is True
+    assert body["display"] == "1 Banane"  # the full known item is sent back, not just the changed field
+
+
+async def test_check_shopping_item_not_found(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": [{"id": "l1"}]})
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists/l1", json={"id": "l1", "listItems": []})
+    client = await hass_client()
+    resp = await client.put("/api/mealie_hub/shopping-list/items/missing", json={"checked": True})
+    assert resp.status == 404
+
+
+async def test_add_recipe_to_shopping_list(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": [{"id": "l1"}]})
+    aioclient_mock.post(f"{MEALIE}/api/households/shopping/lists/l1/recipe", json={"id": "l1"})
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/recipes/r1/shopping-list")
+    assert resp.status == 200
+    _, _, body, _ = aioclient_mock.mock_calls[-1]
+    assert body == [{"recipeId": "r1", "recipe_id": "r1"}]

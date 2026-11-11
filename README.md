@@ -14,14 +14,20 @@ own web UI in an iframe).
 ## What it does
 
 - `GET /api/mealie_hub/recipes` — paginated recipe list (with a
-  Home-Assistant-signed image URL per recipe)
+  Home-Assistant-signed image URL per recipe), optional `?tags=slug,slug`
 - `GET /api/mealie_hub/recipes/{slug}` — full recipe (ingredients, steps,
-  image)
+  image, tags)
 - `GET /api/mealie_hub/recipes/{id}/image` — streams the recipe image
 - `POST /api/mealie_hub/import` — one endpoint for the card's "paste a link"
   field: Instagram/TikTok/Facebook/Pinterest links (and `youtube.com/shorts/`)
   go to Social-to-Mealie, everything else goes to Mealie's own
   scraper + AI-provider fallback
+- `GET /api/mealie_hub/tags`, `PATCH /api/mealie_hub/recipes/{slug}/tags`
+- `GET /api/mealie_hub/shopping-list`,
+  `PUT /api/mealie_hub/shopping-list/items/{id}` (tick an item off),
+  `POST /api/mealie_hub/recipes/{id}/shopping-list` (add a recipe's
+  ingredients) — uses the household's first Mealie shopping list; there's no
+  way yet to pick a different one if you have several
 
 ## Setup
 
@@ -39,6 +45,11 @@ you want recipes extracted from pages without `schema.org` markup.
 
 ## Status
 
-v0.1.0 — initial scaffold. Not yet tested against a real Mealie/Social-to-Mealie
-instance; the recipe image path (`/api/media/recipes/{id}/images/original.webp`)
-in particular needs confirming against a live Mealie version.
+v0.2.0 — recipe browsing/import confirmed working against a real Mealie +
+Ollama + Social-to-Mealie stack. Tags and the shopping list are new in this
+version and **not yet confirmed live**: Mealie's shopping-list item field
+casing (`listItems` vs `list_items`, `recipeId` vs `recipe_id`) was read from
+source, not a live response — the code hedges where cheap (accepts either
+casing on read, sends both on the one write where that's possible), but
+please report back what actually happens the first time you add a recipe to
+the list or check an item off.
