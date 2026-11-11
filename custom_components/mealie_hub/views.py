@@ -98,8 +98,18 @@ class ImportView(HomeAssistantView):
     async def post(self, request: web.Request) -> web.Response:
         body = await request.json()
         url = (body or {}).get("url", "").strip()
+        force = bool((body or {}).get("force", False))
         if not url.startswith(("http://", "https://")):
             return web.json_response({"error": "invalid_url"}, status=400)
+
+        mealie = mealie_client(self._hass)
+        if not force:
+            try:
+                existing = await mealie.find_recipe_by_url(url)
+            except UpstreamError:
+                existing = None  # the duplicate check itself failing shouldn't block a real import
+            if existing:
+                return web.json_response({"error": "duplicate", "slug": existing.get("slug")}, status=409)
 
         try:
             if needs_social(url):
@@ -109,11 +119,20 @@ class ImportView(HomeAssistantView):
                 result = await client.import_from_url(url)
                 slug = (result.get("createdRecipe") or {}).get("slug")
             else:
-                result = await mealie_client(self._hass).import_from_url(url)
+                result = await mealie.import_from_url(url)
                 slug = result if isinstance(result, str) else result.get("slug")
         except UpstreamError as err:
             _LOGGER.warning("Import failed for %s: HTTP %s", url, err.status)
             return web.json_response({"error": err.message}, status=err.status)
+
+        if slug:
+            try:
+                # Social-to-Mealie hardcodes includeTags=true on its own side, so tags can
+                # still slip in there even though the Mealie-own-import path already asks
+                # for none — strip them unconditionally, so tagging stays fully manual.
+                await mealie.set_recipe_tags(slug, [])
+            except UpstreamError:
+                pass  # the recipe still imported; losing the tag-strip isn't worth failing for
 
         return web.json_response({"slug": slug})
 

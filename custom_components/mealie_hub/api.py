@@ -110,9 +110,34 @@ class MealieClient:
     async def list_tags(self) -> Any:
         return await self._request("GET", "/api/organizers/tags", params={"perPage": 200})
 
+    async def delete_tag(self, tag_id: str) -> None:
+        await self._request("DELETE", f"/api/organizers/tags/{tag_id}")
+
+    async def prune_empty_tags(self) -> None:
+        """Deletes every tag with no recipes left — Mealie doesn't garbage-collect these itself."""
+        data = await self.list_tags()
+        for tag in data.get("items", []):
+            if tag.get("recipeCount", 0) == 0:
+                try:
+                    await self.delete_tag(tag["id"])
+                except UpstreamError:
+                    pass  # best-effort cleanup; shouldn't fail the caller's actual action
+
     async def set_recipe_tags(self, slug: str, tag_names: list[str]) -> Any:
         """Replaces a recipe's whole tag list (Mealie has no add/remove-one endpoint)."""
-        return await self._request("PATCH", f"/api/recipes/{slug}", json={"tags": [{"name": t} for t in tag_names]})
+        result = await self._request("PATCH", f"/api/recipes/{slug}", json={"tags": [{"name": t} for t in tag_names]})
+        await self.prune_empty_tags()
+        return result
+
+    async def find_recipe_by_url(self, url: str) -> dict | None:
+        """Scans the recipe list for one already imported from this exact URL — Mealie has
+        no server-side filter for this field, but it IS on the list response (`orgURL`),
+        so one call covers it without needing each recipe's full detail."""
+        data = await self.list_recipes(per_page=500)
+        for item in data.get("items", []):
+            if item.get("orgURL") == url:
+                return item
+        return None
 
     async def shopping_lists(self) -> Any:
         return await self._request("GET", "/api/households/shopping/lists")
@@ -142,8 +167,10 @@ class MealieClient:
         """A GET whose response the caller streams out itself (recipe images)."""
         return self._session.get(url, headers=self._headers)
 
-    async def import_from_url(self, url: str, *, include_tags: bool = True) -> Any:
-        """Mealie's own scraper + AI-provider fallback (normal recipe web pages)."""
+    async def import_from_url(self, url: str, *, include_tags: bool = False) -> Any:
+        """Mealie's own scraper + AI-provider fallback (normal recipe web pages). Tags stay
+        off by default — the user wants tagging to be fully manual, not auto-assigned from
+        whatever categories/keywords the source page happens to carry."""
         return await self._request(
             "POST",
             "/api/recipes/create/url",

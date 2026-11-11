@@ -22,34 +22,55 @@ async def test_recipe_detail(hass, setup_entry, hass_client, aioclient_mock):
     assert body["image_url"] == "/api/mealie_hub/recipes/abc/image"
 
 
+def _no_existing_recipe(aioclient_mock):
+    """The duplicate check (GET /api/recipes) finds nothing by this URL."""
+    aioclient_mock.get(f"{MEALIE}/api/recipes", json={"items": []})
+
+
+def _allow_tag_strip(aioclient_mock, slug):
+    """A successful import always gets its tags stripped, then an empty-tag sweep."""
+    aioclient_mock.patch(f"{MEALIE}/api/recipes/{slug}", json={"slug": slug, "tags": []})
+    aioclient_mock.get(f"{MEALIE}/api/organizers/tags", json={"items": []})
+
+
 async def test_import_normal_url_goes_to_mealie(hass, setup_entry, hass_client, aioclient_mock):
+    _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
+    _allow_tag_strip(aioclient_mock, "soup")
     client = await hass_client()
     resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
     assert resp.status == 200
     assert await resp.json() == {"slug": "soup"}
-    assert aioclient_mock.call_count == 1
+    create_call = next(c for c in aioclient_mock.mock_calls if str(c[1]).endswith("/create/url"))
+    assert create_call[2]["includeTags"] is False  # tagging is manual-only, never auto-assigned
+    assert any(c[0] == "PATCH" and c[2].get("tags") == [] for c in aioclient_mock.mock_calls)
 
 
 async def test_import_instagram_goes_to_social(hass, setup_entry, hass_client, aioclient_mock):
+    _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(
         f"{SOCIAL}/api/get-url",
         json={"createdRecipe": {"slug": "insta-soup"}, "progress": "done"},
     )
+    _allow_tag_strip(aioclient_mock, "insta-soup")
     client = await hass_client()
     resp = await client.post(
         "/api/mealie_hub/import", json={"url": "https://www.instagram.com/reel/abc123/"}
     )
     assert resp.status == 200
     assert await resp.json() == {"slug": "insta-soup"}
-    assert aioclient_mock.call_count == 1
+    # Social-to-Mealie hardcodes includeTags=true on its own end, so the strip
+    # afterwards is what actually keeps this path tag-free, not a request flag.
+    assert any(c[0] == "PATCH" and c[2].get("tags") == [] for c in aioclient_mock.mock_calls)
 
 
 async def test_import_youtube_shorts_goes_to_social(hass, setup_entry, hass_client, aioclient_mock):
+    _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(
         f"{SOCIAL}/api/get-url",
         json={"createdRecipe": {"slug": "short-soup"}, "progress": "done"},
     )
+    _allow_tag_strip(aioclient_mock, "short-soup")
     client = await hass_client()
     resp = await client.post(
         "/api/mealie_hub/import", json={"url": "https://www.youtube.com/shorts/abc123"}
@@ -59,13 +80,15 @@ async def test_import_youtube_shorts_goes_to_social(hass, setup_entry, hass_clie
 
 
 async def test_import_normal_youtube_video_stays_with_mealie(hass, setup_entry, hass_client, aioclient_mock):
+    _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
+    _allow_tag_strip(aioclient_mock, "soup")
     client = await hass_client()
     resp = await client.post(
         "/api/mealie_hub/import", json={"url": "https://www.youtube.com/watch?v=abc123"}
     )
     assert resp.status == 200
-    assert aioclient_mock.call_count == 1
+    assert not any(str(c[1]).endswith("/get-url") for c in aioclient_mock.mock_calls)
 
 
 async def test_import_rejects_non_url(hass, setup_entry, hass_client, aioclient_mock):
@@ -76,10 +99,36 @@ async def test_import_rejects_non_url(hass, setup_entry, hass_client, aioclient_
 
 
 async def test_import_upstream_error_is_forwarded(hass, setup_entry, hass_client, aioclient_mock):
+    _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", status=500, text="boom")
     client = await hass_client()
     resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
     assert resp.status == 500
+
+
+async def test_import_blocks_an_existing_recipe(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(
+        f"{MEALIE}/api/recipes",
+        json={"items": [{"slug": "soup", "orgURL": "https://example.com/soup"}]},
+    )
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
+    assert resp.status == 409
+    assert await resp.json() == {"error": "duplicate", "slug": "soup"}
+    assert aioclient_mock.call_count == 1  # only the duplicate check — no import was attempted
+
+
+async def test_import_force_skips_the_duplicate_check(hass, setup_entry, hass_client, aioclient_mock):
+    # No GET /api/recipes mock is registered at all: if the duplicate check ran
+    # despite force=true, aioclient_mock would raise for the unmocked call.
+    aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
+    _allow_tag_strip(aioclient_mock, "soup")
+    client = await hass_client()
+    resp = await client.post(
+        "/api/mealie_hub/import", json={"url": "https://example.com/soup", "force": True}
+    )
+    assert resp.status == 200
+    assert await resp.json() == {"slug": "soup"}
 
 
 async def test_recipes_forwards_tag_filter(hass, setup_entry, hass_client, aioclient_mock):
@@ -101,11 +150,31 @@ async def test_tags_list(hass, setup_entry, hass_client, aioclient_mock):
 
 async def test_set_recipe_tags(hass, setup_entry, hass_client, aioclient_mock):
     aioclient_mock.patch(f"{MEALIE}/api/recipes/soup", json={"slug": "soup", "tags": [{"name": "vegan"}]})
+    aioclient_mock.get(f"{MEALIE}/api/organizers/tags", json={"items": [{"id": "t-vegan", "name": "vegan", "recipeCount": 1}]})
     client = await hass_client()
     resp = await client.patch("/api/mealie_hub/recipes/soup/tags", json={"tags": ["vegan"]})
     assert resp.status == 200
-    _, _, body, _ = aioclient_mock.mock_calls[-1]
-    assert body == {"tags": [{"name": "vegan"}]}
+    patch_call = next(c for c in aioclient_mock.mock_calls if c[0] == "PATCH")
+    assert patch_call[2] == {"tags": [{"name": "vegan"}]}
+    # "vegan" still has a recipe (count 1), so the empty-tag sweep leaves it alone.
+    assert not any(c[0] == "DELETE" for c in aioclient_mock.mock_calls)
+
+
+async def test_set_recipe_tags_deletes_now_empty_tags(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.patch(f"{MEALIE}/api/recipes/soup", json={"slug": "soup", "tags": []})
+    aioclient_mock.get(
+        f"{MEALIE}/api/organizers/tags",
+        json={"items": [
+            {"id": "t-vegan", "name": "vegan", "recipeCount": 0},
+            {"id": "t-schnell", "name": "schnell", "recipeCount": 2},
+        ]},
+    )
+    aioclient_mock.delete(f"{MEALIE}/api/organizers/tags/t-vegan", status=204)
+    client = await hass_client()
+    resp = await client.patch("/api/mealie_hub/recipes/soup/tags", json={"tags": []})
+    assert resp.status == 200
+    deletes = [str(c[1]) for c in aioclient_mock.mock_calls if c[0] == "DELETE"]
+    assert deletes == [f"{MEALIE}/api/organizers/tags/t-vegan"]  # only the orphaned one, not "schnell"
 
 
 async def test_shopping_list_returns_items(hass, setup_entry, hass_client, aioclient_mock):
