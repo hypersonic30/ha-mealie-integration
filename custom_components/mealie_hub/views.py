@@ -14,7 +14,8 @@ from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
-from .api import NoShoppingListError, UpstreamError, default_shopping_list_id, mealie_client, needs_social, social_client
+from . import import_queue
+from .api import NoShoppingListError, UpstreamError, default_shopping_list_id, mealie_client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -93,7 +94,10 @@ class RecipeImageView(HomeAssistantView):
 
 
 class ImportView(HomeAssistantView):
-    """Takes a single link from the card and routes it to the right backend."""
+    """Takes a single link from the card and enqueues it on the background import
+    queue (see `import_queue.py`) — this view never waits for the import itself, so
+    the card gets an instant response and a page reload can never interrupt the
+    actual work, only the browser's view of it."""
 
     url = "/api/mealie_hub/import"
     name = "api:mealie_hub:import"
@@ -109,43 +113,36 @@ class ImportView(HomeAssistantView):
         if not url.startswith(("http://", "https://")):
             return web.json_response({"error": "invalid_url"}, status=400)
 
-        mealie = mealie_client(self._hass)
         if not force:
             try:
-                existing = await mealie.find_recipe_by_url(url)
+                existing = await mealie_client(self._hass).find_recipe_by_url(url)
             except UpstreamError:
                 existing = None  # the duplicate check itself failing shouldn't block a real import
             if existing:
                 return web.json_response({"error": "duplicate", "slug": existing.get("slug")}, status=409)
 
-        try:
-            if needs_social(url):
-                client = social_client(self._hass)
-                if client is None:
-                    return web.json_response({"error": "social_not_configured"}, status=400)
-                result = await client.import_from_url(url)
-                slug = (result.get("createdRecipe") or {}).get("slug")
-            else:
-                result = await mealie.import_from_url(url)
-                slug = result if isinstance(result, str) else result.get("slug")
-        except UpstreamError as err:
-            _LOGGER.warning("Import failed for %s: HTTP %s", url, err.status)
-            return web.json_response({"error": err.message}, status=err.status)
+        import_queue.enqueue(self._hass, url, force)
+        return web.json_response({"queued": True}, status=202)
 
-        if slug:
-            try:
-                # Social-to-Mealie hardcodes includeTags=true on its own side, so tags can
-                # still slip in there even though the Mealie-own-import path already asks
-                # for none — strip them unconditionally, so tagging stays fully manual.
-                await mealie.set_recipe_tags(slug, [])
-            except UpstreamError:
-                pass  # the recipe still imported; losing the tag-strip isn't worth failing for
-            # Both already catch their own errors — a recipe that imported fine should
-            # never come back as a failure just because this best-effort cleanup didn't.
-            await mealie.improve_recipe_ingredients(slug)
-            await mealie.guess_and_set_servings(slug)
+    async def get(self, request: web.Request) -> web.Response:
+        return web.json_response(import_queue.status(self._hass))
 
-        return web.json_response({"slug": slug})
+
+class ImportCancelView(HomeAssistantView):
+    """Removes a still-waiting (not yet started) job from the import queue."""
+
+    url = "/api/mealie_hub/import/cancel"
+    name = "api:mealie_hub:import_cancel"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def post(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        url = (body or {}).get("url", "")
+        removed = import_queue.cancel_queued(self._hass, url)
+        return web.json_response({"removed": removed})
 
 
 class TagsView(HomeAssistantView):

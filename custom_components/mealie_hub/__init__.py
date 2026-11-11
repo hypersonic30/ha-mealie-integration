@@ -7,6 +7,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
 from .views import (
+    ImportCancelView,
     ImportView,
     RecipeDetailView,
     RecipeImageView,
@@ -26,6 +27,7 @@ _VIEWS = (
     RecipeDetailView,
     RecipeImageView,
     ImportView,
+    ImportCancelView,
     TagsView,
     RecipeTagsView,
     ShoppingListView,

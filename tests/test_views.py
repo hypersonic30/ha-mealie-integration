@@ -1,4 +1,8 @@
 """Proxy views: recipe list/detail, import routing (Mealie vs. Social-to-Mealie)."""
+import asyncio
+
+from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMockResponse
+
 from .conftest import MEALIE, SOCIAL
 
 
@@ -66,14 +70,28 @@ def _allow_tag_strip(aioclient_mock, slug, *, description="", servings=0, ingred
         )
 
 
+async def _run_import(hass, client, url, *, force=False):
+    """Submits a link (which now only *enqueues* it — the actual work runs as a
+    background task, see import_queue.py), waits for the background worker to finish,
+    and returns the resulting history entry."""
+    resp = await client.post("/api/mealie_hub/import", json={"url": url, "force": force})
+    assert resp.status in (202, 409)
+    if resp.status == 409:
+        return {"duplicate_response": await resp.json()}
+    await hass.async_block_till_done()
+    status = await (await client.get("/api/mealie_hub/import")).json()
+    assert status["running"] is None
+    assert status["queue"] == []
+    return status["history"][0]
+
+
 async def test_import_normal_url_goes_to_mealie(hass, setup_entry, hass_client, aioclient_mock):
     _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
     _allow_tag_strip(aioclient_mock, "soup")
     client = await hass_client()
-    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
-    assert resp.status == 200
-    assert await resp.json() == {"slug": "soup"}
+    entry = await _run_import(hass, client, "https://example.com/soup")
+    assert entry == {"url": "https://example.com/soup", "slug": "soup"}
     create_call = next(c for c in aioclient_mock.mock_calls if str(c[1]).endswith("/create/url"))
     assert create_call[2]["includeTags"] is False  # tagging is manual-only, never auto-assigned
     assert any(c[0] == "PATCH" and c[2].get("tags") == [] for c in aioclient_mock.mock_calls)
@@ -86,8 +104,7 @@ async def test_import_reparses_ingredients_left_as_plain_notes(hass, setup_entry
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
     _allow_tag_strip(aioclient_mock, "soup", ingredient_notes=["200g Mehl", "2 Eier"])
     client = await hass_client()
-    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
-    assert resp.status == 200
+    await _run_import(hass, client, "https://example.com/soup")
     parse_call = next(c for c in aioclient_mock.mock_calls if str(c[1]).endswith("/parser/ingredients"))
     assert parse_call[2] == {"parser": "nlp", "ingredients": ["200g Mehl", "2 Eier"]}
     ingredient_patch = next(c for c in aioclient_mock.mock_calls if c[0] == "PATCH" and "recipeIngredient" in c[2])
@@ -102,8 +119,7 @@ async def test_import_guesses_servings_from_description(hass, setup_entry, hass_
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
     _allow_tag_strip(aioclient_mock, "soup", description="Leckeres Gericht für 4 Personen")
     client = await hass_client()
-    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
-    assert resp.status == 200
+    await _run_import(hass, client, "https://example.com/soup")
     servings_patch = next(c for c in aioclient_mock.mock_calls if c[0] == "PATCH" and "recipeServings" in c[2])
     assert servings_patch[2] == {"recipeServings": 4.0}
 
@@ -113,8 +129,7 @@ async def test_import_never_overrides_an_existing_servings_value(hass, setup_ent
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
     _allow_tag_strip(aioclient_mock, "soup", description="für 4 Personen", servings=2)
     client = await hass_client()
-    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
-    assert resp.status == 200
+    await _run_import(hass, client, "https://example.com/soup")
     assert not any(c[0] == "PATCH" and "recipeServings" in c[2] for c in aioclient_mock.mock_calls)
 
 
@@ -126,11 +141,8 @@ async def test_import_instagram_goes_to_social(hass, setup_entry, hass_client, a
     )
     _allow_tag_strip(aioclient_mock, "insta-soup")
     client = await hass_client()
-    resp = await client.post(
-        "/api/mealie_hub/import", json={"url": "https://www.instagram.com/reel/abc123/"}
-    )
-    assert resp.status == 200
-    assert await resp.json() == {"slug": "insta-soup"}
+    entry = await _run_import(hass, client, "https://www.instagram.com/reel/abc123/")
+    assert entry == {"url": "https://www.instagram.com/reel/abc123/", "slug": "insta-soup"}
     # Social-to-Mealie hardcodes includeTags=true on its own end, so the strip
     # afterwards is what actually keeps this path tag-free, not a request flag.
     assert any(c[0] == "PATCH" and c[2].get("tags") == [] for c in aioclient_mock.mock_calls)
@@ -144,11 +156,8 @@ async def test_import_youtube_shorts_goes_to_social(hass, setup_entry, hass_clie
     )
     _allow_tag_strip(aioclient_mock, "short-soup")
     client = await hass_client()
-    resp = await client.post(
-        "/api/mealie_hub/import", json={"url": "https://www.youtube.com/shorts/abc123"}
-    )
-    assert resp.status == 200
-    assert await resp.json() == {"slug": "short-soup"}
+    entry = await _run_import(hass, client, "https://www.youtube.com/shorts/abc123")
+    assert entry == {"url": "https://www.youtube.com/shorts/abc123", "slug": "short-soup"}
 
 
 async def test_import_normal_youtube_video_stays_with_mealie(hass, setup_entry, hass_client, aioclient_mock):
@@ -156,10 +165,7 @@ async def test_import_normal_youtube_video_stays_with_mealie(hass, setup_entry, 
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
     _allow_tag_strip(aioclient_mock, "soup")
     client = await hass_client()
-    resp = await client.post(
-        "/api/mealie_hub/import", json={"url": "https://www.youtube.com/watch?v=abc123"}
-    )
-    assert resp.status == 200
+    await _run_import(hass, client, "https://www.youtube.com/watch?v=abc123")
     assert not any(str(c[1]).endswith("/get-url") for c in aioclient_mock.mock_calls)
 
 
@@ -174,8 +180,8 @@ async def test_import_upstream_error_is_forwarded(hass, setup_entry, hass_client
     _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", status=500, text="boom")
     client = await hass_client()
-    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
-    assert resp.status == 500
+    entry = await _run_import(hass, client, "https://example.com/soup")
+    assert entry == {"url": "https://example.com/soup", "error": "boom"}
 
 
 async def test_import_blocks_an_existing_recipe(hass, setup_entry, hass_client, aioclient_mock):
@@ -184,9 +190,8 @@ async def test_import_blocks_an_existing_recipe(hass, setup_entry, hass_client, 
         json={"items": [{"slug": "soup", "orgURL": "https://example.com/soup"}]},
     )
     client = await hass_client()
-    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
-    assert resp.status == 409
-    assert await resp.json() == {"error": "duplicate", "slug": "soup"}
+    result = await _run_import(hass, client, "https://example.com/soup")
+    assert result == {"duplicate_response": {"error": "duplicate", "slug": "soup"}}
     assert aioclient_mock.call_count == 1  # only the duplicate check — no import was attempted
 
 
@@ -196,11 +201,67 @@ async def test_import_force_skips_the_duplicate_check(hass, setup_entry, hass_cl
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
     _allow_tag_strip(aioclient_mock, "soup")
     client = await hass_client()
-    resp = await client.post(
-        "/api/mealie_hub/import", json={"url": "https://example.com/soup", "force": True}
-    )
+    entry = await _run_import(hass, client, "https://example.com/soup", force=True)
+    assert entry == {"url": "https://example.com/soup", "slug": "soup"}
+
+
+def _blocking_create_url_mock(aioclient_mock, release: asyncio.Event):
+    """Registers a mocked create/url call that stays pending until `release` is set —
+    lets a test observe a job as genuinely still "running", not just instantly finished."""
+
+    async def _slow_create(method, url, data):
+        await release.wait()
+        return AiohttpClientMockResponse(method, url, json="soup")
+
+    aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", side_effect=_slow_create)
+
+
+async def test_import_status_shows_running_and_queued_jobs(hass, setup_entry, hass_client, aioclient_mock):
+    # Two imports submitted back to back: the first starts running immediately, the
+    # second waits in the queue — this is exactly what survives a page reload now,
+    # since both live in hass.data, not in the browser.
+    _no_existing_recipe(aioclient_mock)
+    release = asyncio.Event()
+    _blocking_create_url_mock(aioclient_mock, release)
+    _allow_tag_strip(aioclient_mock, "soup")
+    client = await hass_client()
+
+    resp1 = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/first"})
+    assert resp1.status == 202
+    await asyncio.sleep(0)  # let the worker task actually start and reach the blocked call
+    resp2 = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/second"})
+    assert resp2.status == 202
+
+    status = await (await client.get("/api/mealie_hub/import")).json()
+    assert status["running"]["url"] == "https://example.com/first"
+    assert status["queue"] == [{"url": "https://example.com/second", "force": False}]
+
+    release.set()  # let both jobs actually finish so no task is left dangling
+    await hass.async_block_till_done()
+
+
+async def test_import_cancel_removes_a_queued_job(hass, setup_entry, hass_client, aioclient_mock):
+    _no_existing_recipe(aioclient_mock)
+    release = asyncio.Event()
+    _blocking_create_url_mock(aioclient_mock, release)
+    _allow_tag_strip(aioclient_mock, "soup")
+    client = await hass_client()
+
+    await client.post("/api/mealie_hub/import", json={"url": "https://example.com/first"})
+    await asyncio.sleep(0)
+    await client.post("/api/mealie_hub/import", json={"url": "https://example.com/second"})
+
+    resp = await client.post("/api/mealie_hub/import/cancel", json={"url": "https://example.com/second"})
     assert resp.status == 200
-    assert await resp.json() == {"slug": "soup"}
+    assert (await resp.json()) == {"removed": True}
+    status = await (await client.get("/api/mealie_hub/import")).json()
+    assert status["queue"] == []
+
+    resp_missing = await client.post("/api/mealie_hub/import/cancel", json={"url": "https://not-queued.example.com"})
+    assert (await resp_missing.json()) == {"removed": False}
+
+    release.set()
+    await hass.async_block_till_done()
 
 
 async def test_recipes_forwards_tag_filter(hass, setup_entry, hass_client, aioclient_mock):
