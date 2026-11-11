@@ -1,6 +1,7 @@
 """Proxy views: recipe list/detail, import routing (Mealie vs. Social-to-Mealie)."""
 import asyncio
 
+import aiohttp
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMockResponse
 
 from .conftest import MEALIE, SOCIAL
@@ -158,6 +159,35 @@ async def test_import_youtube_shorts_goes_to_social(hass, setup_entry, hass_clie
     client = await hass_client()
     entry = await _run_import(hass, client, "https://www.youtube.com/shorts/abc123")
     assert entry == {"url": "https://www.youtube.com/shorts/abc123", "slug": "short-soup"}
+
+
+class _TextPlainJsonResponse(AiohttpClientMockResponse):
+    """Mimics Social-to-Mealie's real behavior: a JSON body sent without a
+    Content-Type header, so real aiohttp treats it as text/plain and resp.json()
+    raises ContentTypeError even though resp.text() holds a perfectly valid body."""
+
+    async def json(self, encoding=None, content_type=None, loads=None):
+        raise aiohttp.ContentTypeError(None, (), message="text/plain;charset=utf-8")
+
+
+async def test_import_survives_social_to_mealies_mislabeled_json_response(
+    hass, setup_entry, hass_client, aioclient_mock
+):
+    # Live bug: Social-to-Mealie's non-streaming /api/get-url response never sets
+    # Content-Type, so aiohttp labels a successful (200) JSON body as text/plain and
+    # resp.json() raises ContentTypeError — before anything even looks at the body.
+    _no_existing_recipe(aioclient_mock)
+
+    async def _mislabeled_success(method, url, data):
+        return _TextPlainJsonResponse(
+            method, url, json={"createdRecipe": {"slug": "insta-soup"}, "progress": "done"}
+        )
+
+    aioclient_mock.post(f"{SOCIAL}/api/get-url", side_effect=_mislabeled_success)
+    _allow_tag_strip(aioclient_mock, "insta-soup")
+    client = await hass_client()
+    entry = await _run_import(hass, client, "https://www.instagram.com/reel/abc123/")
+    assert entry == {"url": "https://www.instagram.com/reel/abc123/", "slug": "insta-soup"}
 
 
 async def test_import_normal_youtube_video_stays_with_mealie(hass, setup_entry, hass_client, aioclient_mock):

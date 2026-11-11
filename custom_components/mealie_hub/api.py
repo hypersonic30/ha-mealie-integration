@@ -1,6 +1,7 @@
 """Small async clients for Mealie and Social-to-Mealie, shared by the views."""
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any
@@ -286,7 +287,15 @@ class SocialClient:
             json={"url": url, "tags": tags or []},
             timeout=aiohttp.ClientTimeout(total=IMPORT_TIMEOUT),
         ) as resp:
-            body = await resp.json()
+            # Social-to-Mealie's non-streaming response always sends its JSON body
+            # without a Content-Type header (so aiohttp sees text/plain), on both
+            # success and error — resp.json() would reject it before we ever see
+            # the status, so we read the raw text and parse it ourselves instead.
+            text = await resp.text()
+            try:
+                body = json.loads(text) if text else {}
+            except ValueError:
+                raise UpstreamError(resp.status, text) from None
             if resp.status >= 400:
                 raise UpstreamError(resp.status, body.get("error", str(body)))
             return body
