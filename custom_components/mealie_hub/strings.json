@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Mealie",
+        "description": "Credentials stay in Home Assistant; the Mealie Hub card never sees them.",
+        "data": {
+          "mealie_url": "Mealie URL",
+          "mealie_api_key": "Mealie API key",
+          "social_url": "Social-to-Mealie URL (optional)",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "mealie_url": "e.g. http://192.168.1.10:9000",
+          "mealie_api_key": "Mealie user profile - API tokens",
+          "social_url": "e.g. http://192.168.1.10:4000 - for Instagram/TikTok video recipes. Leave empty to only import from normal recipe websites.",
+          "verify_ssl": "Disable only for self-signed certificates"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Mealie Hub",
+        "description": "Credentials stay in Home Assistant; the Mealie Hub card never sees them.",
+        "data": {
+          "mealie_url": "Mealie URL",
+          "mealie_api_key": "Mealie API key",
+          "social_url": "Social-to-Mealie URL (optional)",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "mealie_url": "e.g. http://192.168.1.10:9000",
+          "mealie_api_key": "Mealie user profile - API tokens",
+          "social_url": "e.g. http://192.168.1.10:4000 - for Instagram/TikTok video recipes. Leave empty to only import from normal recipe websites.",
+          "verify_ssl": "Disable only for self-signed certificates"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Mealie rejected the API key",
+      "cannot_connect": "Could not reach Mealie"
+    },
+    "abort": {
+      "reconfigure_successful": "Settings saved"
+    }
+  }
+}

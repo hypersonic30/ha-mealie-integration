@@ -1,0 +1,14 @@
+{
+  "domain": "mealie_hub",
+  "name": "Mealie Hub (Recipe Card)",
+  "codeowners": ["@hypersonic30"],
+  "config_flow": true,
+  "dependencies": ["http"],
+  "documentation": "https://github.com/hypersonic30/ha-mealie-integration",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/hypersonic30/ha-mealie-integration/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Mit Mealie verbinden",
+        "description": "Zugangsdaten bleiben in Home Assistant; die Mealie-Hub-Card bekommt sie nie zu sehen.",
+        "data": {
+          "mealie_url": "Mealie-URL",
+          "mealie_api_key": "Mealie-API-Schlüssel",
+          "social_url": "Social-to-Mealie-URL (optional)",
+          "verify_ssl": "SSL-Zertifikat prüfen"
+        },
+        "data_description": {
+          "mealie_url": "z. B. http://192.168.1.10:9000",
+          "mealie_api_key": "Mealie → Profil → API-Tokens",
+          "social_url": "z. B. http://192.168.1.10:4000 - für Insta/TikTok-Video-Rezepte. Leer lassen, wenn nur normale Rezeptseiten importiert werden sollen.",
+          "verify_ssl": "Nur bei selbstsignierten Zertifikaten deaktivieren"
+        }
+      },
+      "reconfigure": {
+        "title": "Mealie Hub neu konfigurieren",
+        "description": "Zugangsdaten bleiben in Home Assistant; die Mealie-Hub-Card bekommt sie nie zu sehen.",
+        "data": {
+          "mealie_url": "Mealie-URL",
+          "mealie_api_key": "Mealie-API-Schlüssel",
+          "social_url": "Social-to-Mealie-URL (optional)",
+          "verify_ssl": "SSL-Zertifikat prüfen"
+        },
+        "data_description": {
+          "mealie_url": "z. B. http://192.168.1.10:9000",
+          "mealie_api_key": "Mealie → Profil → API-Tokens",
+          "social_url": "z. B. http://192.168.1.10:4000 - für Insta/TikTok-Video-Rezepte. Leer lassen, wenn nur normale Rezeptseiten importiert werden sollen.",
+          "verify_ssl": "Nur bei selbstsignierten Zertifikaten deaktivieren"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Mealie hat den API-Schlüssel abgelehnt",
+      "cannot_connect": "Mealie war nicht erreichbar"
+    },
+    "abort": {
+      "reconfigure_successful": "Einstellungen gespeichert"
+    }
+  }
+}
