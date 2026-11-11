@@ -22,6 +22,21 @@ async def test_recipe_detail(hass, setup_entry, hass_client, aioclient_mock):
     assert body["image_url"] == "/api/mealie_hub/recipes/abc/image"
 
 
+async def test_delete_recipe(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.delete(f"{MEALIE}/api/recipes/soup", json={"id": "abc", "slug": "soup"})
+    client = await hass_client()
+    resp = await client.delete("/api/mealie_hub/recipes/soup")
+    assert resp.status == 200
+    assert (await resp.json()) == {"ok": True}
+
+
+async def test_delete_recipe_upstream_error_is_forwarded(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.delete(f"{MEALIE}/api/recipes/soup", status=404, text="not found")
+    client = await hass_client()
+    resp = await client.delete("/api/mealie_hub/recipes/soup")
+    assert resp.status == 404
+
+
 def _no_existing_recipe(aioclient_mock):
     """The duplicate check (GET /api/recipes) finds nothing by this URL."""
     aioclient_mock.get(f"{MEALIE}/api/recipes", json={"items": []})

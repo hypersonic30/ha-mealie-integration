@@ -59,6 +59,13 @@ class RecipeDetailView(HomeAssistantView):
             data["image_url"] = f"/api/mealie_hub/recipes/{data['id']}/image"
         return web.json_response(data)
 
+    async def delete(self, request: web.Request, slug: str) -> web.Response:
+        try:
+            await mealie_client(self._hass).delete_recipe(slug)
+        except UpstreamError as err:
+            return web.json_response({"error": err.message}, status=err.status)
+        return web.json_response({"ok": True})
+
 
 class RecipeImageView(HomeAssistantView):
     """Streams a recipe's image through Home Assistant so the card never needs direct network access to Mealie."""

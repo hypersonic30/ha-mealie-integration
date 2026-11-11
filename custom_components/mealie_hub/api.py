@@ -107,6 +107,9 @@ class MealieClient:
     async def get_recipe(self, slug: str) -> Any:
         return await self._request("GET", f"/api/recipes/{slug}")
 
+    async def delete_recipe(self, slug: str) -> Any:
+        return await self._request("DELETE", f"/api/recipes/{slug}")
+
     async def list_tags(self) -> Any:
         return await self._request("GET", "/api/organizers/tags", params={"perPage": 200})
 
