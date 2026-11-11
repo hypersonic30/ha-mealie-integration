@@ -244,3 +244,46 @@ async def test_add_recipe_to_shopping_list(hass, setup_entry, hass_client, aiocl
     assert resp.status == 200
     _, _, body, _ = aioclient_mock.mock_calls[-1]
     assert body == [{"recipeId": "r1", "recipe_id": "r1"}]
+
+
+async def test_delete_shopping_item(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.delete(f"{MEALIE}/api/households/shopping/items/i1", status=204)
+    client = await hass_client()
+    resp = await client.delete("/api/mealie_hub/shopping-list/items/i1")
+    assert resp.status == 200
+    assert (await resp.json()) == {"ok": True}
+
+
+async def test_delete_shopping_item_upstream_error(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.delete(f"{MEALIE}/api/households/shopping/items/i1", status=404, text="not found")
+    client = await hass_client()
+    resp = await client.delete("/api/mealie_hub/shopping-list/items/i1")
+    assert resp.status == 404
+
+
+async def test_clear_checked_shopping_items(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": [{"id": "l1"}]})
+    aioclient_mock.get(
+        f"{MEALIE}/api/households/shopping/lists/l1",
+        json={"id": "l1", "listItems": [
+            {"id": "i1", "display": "1 Banane", "checked": True},
+            {"id": "i2", "display": "1 Apfel", "checked": False},
+            {"id": "i3", "display": "Milch", "checked": True},
+        ]},
+    )
+    aioclient_mock.delete(f"{MEALIE}/api/households/shopping/items/i1", status=204)
+    aioclient_mock.delete(f"{MEALIE}/api/households/shopping/items/i3", status=204)
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/shopping-list/clear-checked")
+    assert resp.status == 200
+    assert (await resp.json()) == {"removed": 2}
+    deleted = sorted(str(c[1]).rsplit("/", 1)[-1] for c in aioclient_mock.mock_calls if c[0] == "DELETE")
+    assert deleted == ["i1", "i3"]  # the unchecked item (i2) is never touched
+
+
+async def test_clear_checked_shopping_items_no_list(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": []})
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/shopping-list/clear-checked")
+    assert resp.status == 404
+    assert (await resp.json())["error"] == "no_shopping_list"

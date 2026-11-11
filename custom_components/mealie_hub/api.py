@@ -162,6 +162,18 @@ class MealieClient:
         """`item` is a full item dict from `shopping_list()`, with `checked` already updated — Mealie's item PUT is unconfirmed as partial-update, so the whole known object is sent back."""
         return await self._request("PUT", f"/api/households/shopping/items/{item['id']}", json=item)
 
+    async def delete_shopping_item(self, item_id: str) -> None:
+        await self._request("DELETE", f"/api/households/shopping/items/{item_id}")
+
+    async def clear_checked_shopping_items(self, list_id: str) -> int:
+        """Deletes every checked item on the list, one by one (no confirmed bulk-delete query format). Returns how many were removed."""
+        data = await self.shopping_list(list_id)
+        items = data.get("listItems", data.get("list_items", []))
+        checked = [i for i in items if i.get("checked")]
+        for item in checked:
+            await self.delete_shopping_item(item["id"])
+        return len(checked)
+
     def image_url(self, recipe_id: str) -> str:
         """Mealie serves the original recipe image at this path (not yet confirmed against every Mealie version)."""
         return f"{self.base_url}/api/media/recipes/{recipe_id}/images/original.webp"

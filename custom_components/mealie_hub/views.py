@@ -226,6 +226,33 @@ class ShoppingListItemView(HomeAssistantView):
             return web.json_response({"error": err.message}, status=err.status)
         return web.json_response(result)
 
+    async def delete(self, request: web.Request, item_id: str) -> web.Response:
+        try:
+            await mealie_client(self._hass).delete_shopping_item(item_id)
+        except UpstreamError as err:
+            return web.json_response({"error": err.message}, status=err.status)
+        return web.json_response({"ok": True})
+
+
+class ShoppingListClearCheckedView(HomeAssistantView):
+    url = "/api/mealie_hub/shopping-list/clear-checked"
+    name = "api:mealie_hub:shopping_list_clear_checked"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def post(self, request: web.Request) -> web.Response:
+        client = mealie_client(self._hass)
+        try:
+            list_id = await default_shopping_list_id(client)
+            removed = await client.clear_checked_shopping_items(list_id)
+        except NoShoppingListError:
+            return web.json_response({"error": "no_shopping_list"}, status=404)
+        except UpstreamError as err:
+            return web.json_response({"error": err.message}, status=err.status)
+        return web.json_response({"removed": removed})
+
 
 class RecipeToShoppingListView(HomeAssistantView):
     url = "/api/mealie_hub/recipes/{recipe_id}/shopping-list"

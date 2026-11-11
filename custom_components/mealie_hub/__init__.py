@@ -13,6 +13,7 @@ from .views import (
     RecipesView,
     RecipeTagsView,
     RecipeToShoppingListView,
+    ShoppingListClearCheckedView,
     ShoppingListItemView,
     ShoppingListView,
     TagsView,
@@ -29,6 +30,7 @@ _VIEWS = (
     RecipeTagsView,
     ShoppingListView,
     ShoppingListItemView,
+    ShoppingListClearCheckedView,
     RecipeToShoppingListView,
 )
 
