@@ -190,6 +190,22 @@ async def test_import_survives_social_to_mealies_mislabeled_json_response(
     assert entry == {"url": "https://www.instagram.com/reel/abc123/", "slug": "insta-soup"}
 
 
+async def test_import_reports_a_clear_timeout_instead_of_unexpected_error(
+    hass, setup_entry, hass_client, aioclient_mock
+):
+    # Live bug: the video pipeline can outrun IMPORT_TIMEOUT on slow hardware even
+    # though Social-to-Mealie keeps working and the recipe may still get created —
+    # a raw TimeoutError on the main import call must produce a clear "timeout"
+    # entry (and never leave "running" stuck), not the generic unexpected_error.
+    _no_existing_recipe(aioclient_mock)
+    aioclient_mock.post(f"{SOCIAL}/api/get-url", exc=TimeoutError("boom"))
+    client = await hass_client()
+    entry = await _run_import(hass, client, "https://www.instagram.com/reel/abc123/")
+    assert entry == {"url": "https://www.instagram.com/reel/abc123/", "error": "timeout"}
+    status = await (await client.get("/api/mealie_hub/import")).json()
+    assert status["running"] is None
+
+
 async def test_import_normal_youtube_video_stays_with_mealie(hass, setup_entry, hass_client, aioclient_mock):
     _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")

@@ -11,8 +11,10 @@ DEFAULT_VERIFY_SSL = True
 
 REQUEST_TIMEOUT = 30.0
 # The import pipeline (video download + transcription + AI extraction) can run for
-# several minutes on modest hardware; the create-recipe call needs real headroom.
-IMPORT_TIMEOUT = 600.0
+# a long time on modest/local-LLM hardware; a real timeout observed in practice (10
+# min) was too short and produced a false failure for a recipe that still imported
+# fine — the create-recipe call needs generous headroom.
+IMPORT_TIMEOUT = 1800.0
 
 # Domains routed to Social-to-Mealie (video platforms Mealie's own scraper can't read).
 SOCIAL_DOMAINS = (

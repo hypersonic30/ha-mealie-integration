@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Any
 
+import aiohttp
 from homeassistant.core import HomeAssistant
 
 from .api import UpstreamError, mealie_client, needs_social, social_client
@@ -86,6 +87,12 @@ async def _run_one(hass: HomeAssistant, url: str, force: bool) -> dict[str, Any]
     except UpstreamError as err:
         _LOGGER.warning("Import failed for %s: HTTP %s", url, err.status)
         return {"url": url, "error": err.message}
+    except (TimeoutError, aiohttp.ClientError) as err:
+        # The video pipeline (download + transcription + AI extraction) can outrun
+        # even IMPORT_TIMEOUT on slow hardware — Social-to-Mealie keeps working and
+        # may still create the recipe, we've just stopped waiting for the answer.
+        _LOGGER.warning("Import timed out or failed for %s: %s", url, err)
+        return {"url": url, "error": "timeout"}
 
     if slug:
         try:
