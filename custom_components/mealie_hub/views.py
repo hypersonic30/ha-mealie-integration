@@ -140,6 +140,10 @@ class ImportView(HomeAssistantView):
                 await mealie.set_recipe_tags(slug, [])
             except UpstreamError:
                 pass  # the recipe still imported; losing the tag-strip isn't worth failing for
+            # Both already catch their own errors — a recipe that imported fine should
+            # never come back as a failure just because this best-effort cleanup didn't.
+            await mealie.improve_recipe_ingredients(slug)
+            await mealie.guess_and_set_servings(slug)
 
         return web.json_response({"slug": slug})
 

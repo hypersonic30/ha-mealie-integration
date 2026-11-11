@@ -1,6 +1,7 @@
 """Small async clients for Mealie and Social-to-Mealie, shared by the views."""
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -39,6 +40,28 @@ class NoShoppingListError(Exception):
 def get_config(hass: HomeAssistant) -> dict:
     """The live config entry data — updated on reconfigure without a restart."""
     return hass.data.get(DOMAIN, {}).get("config", {})
+
+
+# Social-to-Mealie's own recipe schema has no yield/servings field at all (confirmed
+# from its source), so a caption saying e.g. "für 4 Personen" never reaches Mealie —
+# there's nowhere in the structured output for the LLM to put it. This is a best-effort
+# guess from the recipe's (already-imported) description text, not a real extraction.
+_SERVINGS_PATTERNS = [
+    re.compile(r"für\s+(\d+)\s*personen", re.IGNORECASE),
+    re.compile(r"(\d+)\s*personen", re.IGNORECASE),
+    re.compile(r"(\d+)\s*portionen", re.IGNORECASE),
+    re.compile(r"ergibt\s+(\d+)", re.IGNORECASE),
+    re.compile(r"serves?\s+(\d+)", re.IGNORECASE),
+    re.compile(r"(\d+)\s*servings", re.IGNORECASE),
+]
+
+
+def guess_servings(text: str) -> float | None:
+    for pattern in _SERVINGS_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            return float(match.group(1))
+    return None
 
 
 def needs_social(url: str) -> bool:
@@ -109,6 +132,44 @@ class MealieClient:
 
     async def delete_recipe(self, slug: str) -> Any:
         return await self._request("DELETE", f"/api/recipes/{slug}")
+
+    async def parse_ingredients(self, ingredient_texts: list[str]) -> Any:
+        return await self._request("POST", "/api/parser/ingredients", json={"parser": "nlp", "ingredients": ingredient_texts})
+
+    async def improve_recipe_ingredients(self, slug: str) -> None:
+        """Mealie's create-from-scrape/JSON path never runs ingredient strings through its
+        own parser — it just dumps each one whole into `note`, with quantity/unit/food left
+        empty. Best-effort: re-parse every ingredient's text and PATCH the structured
+        result back. Never raises — a parsing failure just leaves the plain-text notes,
+        which still display fine, only without separate quantity/unit."""
+        try:
+            recipe = await self.get_recipe(slug)
+            ingredients = recipe.get("recipeIngredient", [])
+            texts = [i.get("note") or i.get("display") or "" for i in ingredients if isinstance(i, dict)]
+            texts = [t for t in texts if t]
+            if not texts:
+                return
+            parsed = await self.parse_ingredients(texts)
+            new_ingredients = [p["ingredient"] for p in parsed if p.get("ingredient")]
+            if len(new_ingredients) != len(ingredients):
+                return  # a count mismatch means something unexpected happened; safer to leave as-is
+            await self._request("PATCH", f"/api/recipes/{slug}", json={"recipeIngredient": new_ingredients})
+        except UpstreamError:
+            pass
+
+    async def guess_and_set_servings(self, slug: str) -> None:
+        """See `guess_servings` — a best-effort regex guess from the recipe's description,
+        since Social-to-Mealie's own schema has nowhere to put servings info at all."""
+        try:
+            recipe = await self.get_recipe(slug)
+            if recipe.get("recipeServings"):
+                return  # already has a real value — never override it with a guess
+            servings = guess_servings(recipe.get("description") or "")
+            if servings is None:
+                return
+            await self._request("PATCH", f"/api/recipes/{slug}", json={"recipeServings": servings})
+        except UpstreamError:
+            pass
 
     async def list_tags(self) -> Any:
         return await self._request("GET", "/api/organizers/tags", params={"perPage": 200})

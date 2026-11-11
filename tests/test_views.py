@@ -42,10 +42,28 @@ def _no_existing_recipe(aioclient_mock):
     aioclient_mock.get(f"{MEALIE}/api/recipes", json={"items": []})
 
 
-def _allow_tag_strip(aioclient_mock, slug):
-    """A successful import always gets its tags stripped, then an empty-tag sweep."""
+def _allow_tag_strip(aioclient_mock, slug, *, description="", servings=0, ingredient_notes=None):
+    """A successful import always gets its tags stripped (+ an empty-tag sweep), its
+    ingredients re-parsed, and a servings guess attempted — all best-effort cleanup.
+    With no ingredients/description given, the latter two are no-ops (nothing to parse,
+    nothing to match), which is what every test not specifically about them needs."""
     aioclient_mock.patch(f"{MEALIE}/api/recipes/{slug}", json={"slug": slug, "tags": []})
     aioclient_mock.get(f"{MEALIE}/api/organizers/tags", json={"items": []})
+    notes = ingredient_notes or []
+    aioclient_mock.get(
+        f"{MEALIE}/api/recipes/{slug}",
+        json={
+            "slug": slug,
+            "description": description,
+            "recipeServings": servings,
+            "recipeIngredient": [{"note": t, "display": t} for t in notes],
+        },
+    )
+    if notes:
+        aioclient_mock.post(
+            f"{MEALIE}/api/parser/ingredients",
+            json=[{"input": t, "ingredient": {"note": "", "quantity": 1, "food": {"name": t}, "display": t}} for t in notes],
+        )
 
 
 async def test_import_normal_url_goes_to_mealie(hass, setup_entry, hass_client, aioclient_mock):
@@ -59,6 +77,45 @@ async def test_import_normal_url_goes_to_mealie(hass, setup_entry, hass_client, 
     create_call = next(c for c in aioclient_mock.mock_calls if str(c[1]).endswith("/create/url"))
     assert create_call[2]["includeTags"] is False  # tagging is manual-only, never auto-assigned
     assert any(c[0] == "PATCH" and c[2].get("tags") == [] for c in aioclient_mock.mock_calls)
+
+
+async def test_import_reparses_ingredients_left_as_plain_notes(hass, setup_entry, hass_client, aioclient_mock):
+    # Mealie's create path never runs its own ingredient parser — every string lands
+    # whole in `note`. The import should re-parse and PATCH the structured result back.
+    _no_existing_recipe(aioclient_mock)
+    aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
+    _allow_tag_strip(aioclient_mock, "soup", ingredient_notes=["200g Mehl", "2 Eier"])
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
+    assert resp.status == 200
+    parse_call = next(c for c in aioclient_mock.mock_calls if str(c[1]).endswith("/parser/ingredients"))
+    assert parse_call[2] == {"parser": "nlp", "ingredients": ["200g Mehl", "2 Eier"]}
+    ingredient_patch = next(c for c in aioclient_mock.mock_calls if c[0] == "PATCH" and "recipeIngredient" in c[2])
+    assert ingredient_patch[2]["recipeIngredient"] == [
+        {"note": "", "quantity": 1, "food": {"name": "200g Mehl"}, "display": "200g Mehl"},
+        {"note": "", "quantity": 1, "food": {"name": "2 Eier"}, "display": "2 Eier"},
+    ]
+
+
+async def test_import_guesses_servings_from_description(hass, setup_entry, hass_client, aioclient_mock):
+    _no_existing_recipe(aioclient_mock)
+    aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
+    _allow_tag_strip(aioclient_mock, "soup", description="Leckeres Gericht für 4 Personen")
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
+    assert resp.status == 200
+    servings_patch = next(c for c in aioclient_mock.mock_calls if c[0] == "PATCH" and "recipeServings" in c[2])
+    assert servings_patch[2] == {"recipeServings": 4.0}
+
+
+async def test_import_never_overrides_an_existing_servings_value(hass, setup_entry, hass_client, aioclient_mock):
+    _no_existing_recipe(aioclient_mock)
+    aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
+    _allow_tag_strip(aioclient_mock, "soup", description="für 4 Personen", servings=2)
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/import", json={"url": "https://example.com/soup"})
+    assert resp.status == 200
+    assert not any(c[0] == "PATCH" and "recipeServings" in c[2] for c in aioclient_mock.mock_calls)
 
 
 async def test_import_instagram_goes_to_social(hass, setup_entry, hass_client, aioclient_mock):
