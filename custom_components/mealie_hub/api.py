@@ -1,6 +1,7 @@
 """Small async clients for Mealie and Social-to-Mealie, shared by the views."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 from urllib.parse import urlsplit
@@ -9,6 +10,8 @@ import aiohttp
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+_LOGGER = logging.getLogger(__name__)
 
 from .const import (
     CONF_MEALIE_API_KEY,
@@ -140,7 +143,11 @@ class MealieClient:
         """Mealie's create-from-scrape/JSON path never runs ingredient strings through its
         own parser — it just dumps each one whole into `note`, with quantity/unit/food left
         empty. Best-effort: re-parse every ingredient's text and PATCH the structured
-        result back. Never raises — a parsing failure just leaves the plain-text notes,
+        result back. Never raises — the recipe already imported successfully by the time
+        this runs, and a bug or hiccup here must never look like the import itself failed
+        (it did, for real, once: left the import queue's "running" marker stuck forever
+        because only UpstreamError was caught here, not e.g. a parser response shaped
+        differently than expected). A parsing failure just leaves the plain-text notes,
         which still display fine, only without separate quantity/unit."""
         try:
             recipe = await self.get_recipe(slug)
@@ -154,12 +161,13 @@ class MealieClient:
             if len(new_ingredients) != len(ingredients):
                 return  # a count mismatch means something unexpected happened; safer to leave as-is
             await self._request("PATCH", f"/api/recipes/{slug}", json={"recipeIngredient": new_ingredients})
-        except UpstreamError:
-            pass
+        except Exception:  # noqa: BLE001 - deliberately broad, see docstring
+            _LOGGER.warning("Re-parsing ingredients failed for %s", slug, exc_info=True)
 
     async def guess_and_set_servings(self, slug: str) -> None:
         """See `guess_servings` — a best-effort regex guess from the recipe's description,
-        since Social-to-Mealie's own schema has nowhere to put servings info at all."""
+        since Social-to-Mealie's own schema has nowhere to put servings info at all.
+        Broad except for the same reason as `improve_recipe_ingredients` above."""
         try:
             recipe = await self.get_recipe(slug)
             if recipe.get("recipeServings"):
@@ -168,8 +176,8 @@ class MealieClient:
             if servings is None:
                 return
             await self._request("PATCH", f"/api/recipes/{slug}", json={"recipeServings": servings})
-        except UpstreamError:
-            pass
+        except Exception:  # noqa: BLE001 - deliberately broad, see docstring
+            _LOGGER.warning("Guessing servings failed for %s", slug, exc_info=True)
 
     async def list_tags(self) -> Any:
         return await self._request("GET", "/api/organizers/tags", params={"perPage": 200})
@@ -178,14 +186,19 @@ class MealieClient:
         await self._request("DELETE", f"/api/organizers/tags/{tag_id}")
 
     async def prune_empty_tags(self) -> None:
-        """Deletes every tag with no recipes left — Mealie doesn't garbage-collect these itself."""
-        data = await self.list_tags()
-        for tag in data.get("items", []):
-            if tag.get("recipeCount", 0) == 0:
-                try:
-                    await self.delete_tag(tag["id"])
-                except UpstreamError:
-                    pass  # best-effort cleanup; shouldn't fail the caller's actual action
+        """Deletes every tag with no recipes left — Mealie doesn't garbage-collect these
+        itself. Never raises: this is cleanup after a tag was already successfully set,
+        in both the interactive (card) and best-effort (import) callers."""
+        try:
+            data = await self.list_tags()
+            for tag in data.get("items", []):
+                if tag.get("recipeCount", 0) == 0:
+                    try:
+                        await self.delete_tag(tag["id"])
+                    except Exception:  # noqa: BLE001
+                        pass  # best-effort cleanup; shouldn't fail the caller's actual action
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Pruning empty tags failed", exc_info=True)
 
     async def set_recipe_tags(self, slug: str, tag_names: list[str]) -> Any:
         """Replaces a recipe's whole tag list (Mealie has no add/remove-one endpoint)."""

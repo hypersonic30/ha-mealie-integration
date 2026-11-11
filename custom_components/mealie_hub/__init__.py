@@ -55,4 +55,9 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    # A bug in the import worker could in principle leave "running" stuck forever
+    # (hass.data persists across a config reload, unlike a full HA restart) —
+    # dropping it here means reloading this integration in the UI is always a
+    # working recovery path, not just a full restart of Home Assistant.
+    hass.data.get(DOMAIN, {}).pop("import_state", None)
     return True

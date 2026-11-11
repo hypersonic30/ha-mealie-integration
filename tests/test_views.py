@@ -195,6 +195,22 @@ async def test_import_blocks_an_existing_recipe(hass, setup_entry, hass_client, 
     assert aioclient_mock.call_count == 1  # only the duplicate check — no import was attempted
 
 
+async def test_import_survives_an_unexpected_error_in_cleanup(hass, setup_entry, hass_client, aioclient_mock):
+    # A raw (non-UpstreamError) exception during the best-effort post-import cleanup
+    # must never leave the queue's "running" marker stuck forever — that's exactly
+    # what happened for real once, when only UpstreamError was caught around it.
+    _no_existing_recipe(aioclient_mock)
+    aioclient_mock.post(f"{MEALIE}/api/recipes/create/url", json="soup")
+    aioclient_mock.patch(f"{MEALIE}/api/recipes/soup", json={"slug": "soup", "tags": []})
+    aioclient_mock.get(f"{MEALIE}/api/organizers/tags", json={"items": []})
+    aioclient_mock.get(f"{MEALIE}/api/recipes/soup", exc=TimeoutError("boom"))
+    client = await hass_client()
+    entry = await _run_import(hass, client, "https://example.com/soup")
+    assert entry == {"url": "https://example.com/soup", "slug": "soup"}  # the import itself still succeeded
+    status = await (await client.get("/api/mealie_hub/import")).json()
+    assert status["running"] is None  # never stuck, even though cleanup blew up
+
+
 async def test_import_force_skips_the_duplicate_check(hass, setup_entry, hass_client, aioclient_mock):
     # No GET /api/recipes mock is registered at all: if the duplicate check ran
     # despite force=true, aioclient_mock would raise for the unmocked call.

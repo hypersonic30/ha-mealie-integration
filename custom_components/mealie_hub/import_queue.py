@@ -58,11 +58,16 @@ async def _worker(hass: HomeAssistant) -> None:
         while state["queue"]:
             job = state["queue"].pop(0)
             state["running"] = {"url": job["url"], "started_at": time.time()}
-            entry = await _run_one(hass, job["url"], job["force"])
+            try:
+                entry = await _run_one(hass, job["url"], job["force"])
+            except Exception:  # noqa: BLE001 - a bug here must never leave "running" stuck forever
+                _LOGGER.exception("Unexpected error importing %s", job["url"])
+                entry = {"url": job["url"], "error": "unexpected_error"}
             state["running"] = None
             state["history"].insert(0, entry)
             del state["history"][HISTORY_MAX:]
     finally:
+        state["running"] = None
         state["worker_active"] = False
 
 
@@ -88,10 +93,11 @@ async def _run_one(hass: HomeAssistant, url: str, force: bool) -> dict[str, Any]
             # still slip in there even though the Mealie-own-import path already asks
             # for none — strip them unconditionally, so tagging stays fully manual.
             await mealie.set_recipe_tags(slug, [])
-        except UpstreamError:
-            pass  # the recipe still imported; losing the tag-strip isn't worth failing for
-        # Both already catch their own errors — a recipe that imported fine should
-        # never come back as a failure just because this best-effort cleanup didn't.
+        except Exception:  # noqa: BLE001 - the recipe still imported; this cleanup failing isn't worth losing that
+            _LOGGER.warning("Stripping tags failed for %s", slug, exc_info=True)
+        # Both already catch their own errors (broadly, on purpose) — a recipe that
+        # imported fine should never come back as a failure just because this
+        # best-effort cleanup didn't, and the worker must never get stuck over it.
         await mealie.improve_recipe_ingredients(slug)
         await mealie.guess_and_set_servings(slug)
 
