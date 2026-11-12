@@ -103,7 +103,12 @@ async def test_import_normal_url_goes_to_mealie(hass, setup_entry, hass_client, 
     _allow_tag_strip(aioclient_mock, "soup")
     client = await hass_client()
     entry = await _run_import(hass, client, "https://example.com/soup")
-    assert entry == {"url": "https://example.com/soup", "slug": "soup"}
+    assert entry == {
+        "url": "https://example.com/soup",
+        "slug": "soup",
+        "ingredients_improved": False,
+        "servings_set": None,
+    }
     create_call = next(c for c in aioclient_mock.mock_calls if str(c[1]).endswith("/create/url"))
     assert create_call[2]["includeTags"] is False  # tagging is manual-only, never auto-assigned
     assert any(c[0] == "PATCH" and c[2].get("tags") == [] for c in aioclient_mock.mock_calls)
@@ -169,7 +174,12 @@ async def test_import_instagram_goes_to_social(hass, setup_entry, hass_client, a
     _allow_tag_strip(aioclient_mock, "insta-soup")
     client = await hass_client()
     entry = await _run_import(hass, client, "https://www.instagram.com/reel/abc123/")
-    assert entry == {"url": "https://www.instagram.com/reel/abc123/", "slug": "insta-soup"}
+    assert entry == {
+        "url": "https://www.instagram.com/reel/abc123/",
+        "slug": "insta-soup",
+        "ingredients_improved": False,
+        "servings_set": None,
+    }
     # Social-to-Mealie hardcodes includeTags=true on its own end, so the strip
     # afterwards is what actually keeps this path tag-free, not a request flag.
     assert any(c[0] == "PATCH" and c[2].get("tags") == [] for c in aioclient_mock.mock_calls)
@@ -184,7 +194,45 @@ async def test_import_youtube_shorts_goes_to_social(hass, setup_entry, hass_clie
     _allow_tag_strip(aioclient_mock, "short-soup")
     client = await hass_client()
     entry = await _run_import(hass, client, "https://www.youtube.com/shorts/abc123")
-    assert entry == {"url": "https://www.youtube.com/shorts/abc123", "slug": "short-soup"}
+    assert entry == {
+        "url": "https://www.youtube.com/shorts/abc123",
+        "slug": "short-soup",
+        "ingredients_improved": False,
+        "servings_set": None,
+    }
+
+
+async def test_import_instagram_runs_the_full_post_processing_pipeline(
+    hass, setup_entry, hass_client, aioclient_mock
+):
+    """Consolidated regression test for the missing-slug bug: a realistically-shaped
+    Social-to-Mealie response must make it all the way through slug extraction, tag
+    stripping, ingredient re-parsing AND the servings guess — all four used to be
+    silently skipped together because `slug` was always falsy, with no exception and
+    nothing logged. Any one of these breaking again should fail here, not just the
+    narrower test that happens to cover it in isolation."""
+    _no_existing_recipe(aioclient_mock)
+    aioclient_mock.post(
+        f"{SOCIAL}/api/get-url",
+        json={"createdRecipe": _social_created_recipe("insta-pasta"), "progress": "done"},
+    )
+    _allow_tag_strip(
+        aioclient_mock,
+        "insta-pasta",
+        description="Für 4 Personen: cremige Pasta",
+        ingredient_notes=["300g Nudeln"],
+    )
+    client = await hass_client()
+    entry = await _run_import(hass, client, "https://www.instagram.com/reel/abc123/")
+    assert entry == {
+        "url": "https://www.instagram.com/reel/abc123/",
+        "slug": "insta-pasta",
+        "ingredients_improved": True,
+        "servings_set": 4.0,
+    }
+    assert any(c[0] == "PATCH" and c[2].get("tags") == [] for c in aioclient_mock.mock_calls)
+    assert any(c[0] == "PATCH" and "recipeIngredient" in c[2] for c in aioclient_mock.mock_calls)
+    assert any(c[0] == "PATCH" and c[2].get("recipeServings") == 4.0 for c in aioclient_mock.mock_calls)
 
 
 class _TextPlainJsonResponse(AiohttpClientMockResponse):
@@ -213,7 +261,12 @@ async def test_import_survives_social_to_mealies_mislabeled_json_response(
     _allow_tag_strip(aioclient_mock, "insta-soup")
     client = await hass_client()
     entry = await _run_import(hass, client, "https://www.instagram.com/reel/abc123/")
-    assert entry == {"url": "https://www.instagram.com/reel/abc123/", "slug": "insta-soup"}
+    assert entry == {
+        "url": "https://www.instagram.com/reel/abc123/",
+        "slug": "insta-soup",
+        "ingredients_improved": False,
+        "servings_set": None,
+    }
 
 
 async def test_import_reports_a_clear_timeout_instead_of_unexpected_error(
@@ -278,7 +331,12 @@ async def test_import_survives_an_unexpected_error_in_cleanup(hass, setup_entry,
     aioclient_mock.get(f"{MEALIE}/api/recipes/soup", exc=TimeoutError("boom"))
     client = await hass_client()
     entry = await _run_import(hass, client, "https://example.com/soup")
-    assert entry == {"url": "https://example.com/soup", "slug": "soup"}  # the import itself still succeeded
+    assert entry == {
+        "url": "https://example.com/soup",
+        "slug": "soup",
+        "ingredients_improved": False,
+        "servings_set": None,
+    }  # the import itself still succeeded
     status = await (await client.get("/api/mealie_hub/import")).json()
     assert status["running"] is None  # never stuck, even though cleanup blew up
 
@@ -290,7 +348,12 @@ async def test_import_force_skips_the_duplicate_check(hass, setup_entry, hass_cl
     _allow_tag_strip(aioclient_mock, "soup")
     client = await hass_client()
     entry = await _run_import(hass, client, "https://example.com/soup", force=True)
-    assert entry == {"url": "https://example.com/soup", "slug": "soup"}
+    assert entry == {
+        "url": "https://example.com/soup",
+        "slug": "soup",
+        "ingredients_improved": False,
+        "servings_set": None,
+    }
 
 
 def _blocking_create_url_mock(aioclient_mock, release: asyncio.Event):

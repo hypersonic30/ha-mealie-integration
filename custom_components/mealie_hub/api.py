@@ -68,6 +68,30 @@ def guess_servings(text: str) -> float | None:
     return None
 
 
+_VAGUE_QUANTITY_PREFIXES = (
+    "eine kleine Menge ",
+    "eine große Menge ",
+    "eine Menge ",
+    "ein wenig ",
+    "etwas ",
+)
+
+
+def _split_vague_quantity(text: str) -> tuple[str, str | None]:
+    """Strips a leading word-based quantity ("etwas", "eine kleine Menge", ...) off an
+    ingredient's raw text before it goes to Mealie's parser — confirmed live: the parser
+    has no concept of these, so it bakes the whole phrase into the food name verbatim
+    ("eine kleine Menge Butter" as one food, quantity 0, no unit) instead of recognizing
+    a quantity at all. Dropping the phrase outright would lose real information though
+    (it tells you not to use a lot of it, not just "some amount"), so the caller re-attaches
+    it to the parsed ingredient's note instead — same signal, just off the food name."""
+    lowered = text.lower()
+    for prefix in _VAGUE_QUANTITY_PREFIXES:
+        if lowered.startswith(prefix.lower()):
+            return text[len(prefix):].lstrip(), prefix.strip()
+    return text, None
+
+
 def extract_social_slug(result: dict) -> str | None:
     """Social-to-Mealie's /api/get-url response never carries the created recipe's
     slug directly — confirmed from its source: `createdRecipe` is a hand-built
@@ -156,7 +180,7 @@ class MealieClient:
     async def parse_ingredients(self, ingredient_texts: list[str]) -> Any:
         return await self._request("POST", "/api/parser/ingredients", json={"parser": "nlp", "ingredients": ingredient_texts})
 
-    async def improve_recipe_ingredients(self, slug: str) -> None:
+    async def improve_recipe_ingredients(self, slug: str) -> bool:
         """Mealie's create-from-scrape/JSON path never runs ingredient strings through its
         own parser — it just dumps each one whole into `note`, with quantity/unit/food left
         empty. Best-effort: re-parse every ingredient's text and PATCH the structured
@@ -165,22 +189,42 @@ class MealieClient:
         (it did, for real, once: left the import queue's "running" marker stuck forever
         because only UpstreamError was caught here, not e.g. a parser response shaped
         differently than expected). A parsing failure just leaves the plain-text notes,
-        which still display fine, only without separate quantity/unit."""
+        which still display fine, only without separate quantity/unit.
+
+        Returns whether the PATCH actually happened — so the caller can log it. The import
+        queue used to have no way to tell "ran and improved nothing" apart from "silently
+        never ran at all", which is exactly how the missing-slug bug (see `extract_social_slug`)
+        went unnoticed for so long."""
         try:
             recipe = await self.get_recipe(slug)
             ingredients = recipe.get("recipeIngredient", [])
             texts = [i.get("note") or i.get("display") or "" for i in ingredients if isinstance(i, dict)]
             texts = [t for t in texts if t]
             if not texts:
-                return
-            parsed = await self.parse_ingredients(texts)
-            new_ingredients = [p["ingredient"] for p in parsed if p.get("ingredient")]
+                return False
+            split = [_split_vague_quantity(t) for t in texts]
+            stripped_texts = [clean for clean, _vague in split]
+            vague_quantities = [vague for _clean, vague in split]
+            parsed = await self.parse_ingredients(stripped_texts)
+            if len(parsed) != len(vague_quantities):
+                return False  # a count mismatch means something unexpected happened; safer to leave as-is
+            new_ingredients = []
+            for item, vague in zip(parsed, vague_quantities):
+                ingredient = item.get("ingredient")
+                if not ingredient:
+                    return False  # same reasoning as above
+                if vague:
+                    existing_note = ingredient.get("note") or ""
+                    ingredient["note"] = f"{vague}, {existing_note}" if existing_note else vague
+                new_ingredients.append(ingredient)
             if len(new_ingredients) != len(ingredients):
-                return  # a count mismatch means something unexpected happened; safer to leave as-is
+                return False  # a count mismatch means something unexpected happened; safer to leave as-is
             await self._resolve_new_ingredient_refs(new_ingredients)
             await self._request("PATCH", f"/api/recipes/{slug}", json={"recipeIngredient": new_ingredients})
+            return True
         except Exception:  # noqa: BLE001 - deliberately broad, see docstring
             _LOGGER.warning("Re-parsing ingredients failed for %s", slug, exc_info=True)
+            return False
 
     async def _resolve_new_ingredient_refs(self, ingredients: list[dict]) -> None:
         """The parser returns a brand-new food/unit (id=None) for anything not already
@@ -221,20 +265,25 @@ class MealieClient:
         cache[key] = ref_id
         return ref_id
 
-    async def guess_and_set_servings(self, slug: str) -> None:
+    async def guess_and_set_servings(self, slug: str) -> float | None:
         """See `guess_servings` — a best-effort regex guess from the recipe's description,
         since Social-to-Mealie's own schema has nowhere to put servings info at all.
-        Broad except for the same reason as `improve_recipe_ingredients` above."""
+        Broad except for the same reason as `improve_recipe_ingredients` above.
+
+        Returns the value it set, or None if it set nothing — see that docstring for why
+        this is worth telling the caller instead of just swallowing it."""
         try:
             recipe = await self.get_recipe(slug)
             if recipe.get("recipeServings"):
-                return  # already has a real value — never override it with a guess
+                return None  # already has a real value — never override it with a guess
             servings = guess_servings(recipe.get("description") or "")
             if servings is None:
-                return
+                return None
             await self._request("PATCH", f"/api/recipes/{slug}", json={"recipeServings": servings})
+            return servings
         except Exception:  # noqa: BLE001 - deliberately broad, see docstring
             _LOGGER.warning("Guessing servings failed for %s", slug, exc_info=True)
+            return None
 
     async def list_tags(self) -> Any:
         return await self._request("GET", "/api/organizers/tags", params={"perPage": 200})

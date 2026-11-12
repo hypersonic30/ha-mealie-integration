@@ -105,7 +105,14 @@ async def _run_one(hass: HomeAssistant, url: str, force: bool) -> dict[str, Any]
         # Both already catch their own errors (broadly, on purpose) — a recipe that
         # imported fine should never come back as a failure just because this
         # best-effort cleanup didn't, and the worker must never get stuck over it.
-        await mealie.improve_recipe_ingredients(slug)
-        await mealie.guess_and_set_servings(slug)
+        ingredients_improved = await mealie.improve_recipe_ingredients(slug)
+        servings_set = await mealie.guess_and_set_servings(slug)
+        # Logged at info level on purpose: the missing-slug bug this guarded against
+        # ran silently for a long time precisely because nothing confirmed success either.
+        _LOGGER.info(
+            "Post-processing for %s: ingredients_improved=%s servings_set=%s",
+            slug, ingredients_improved, servings_set,
+        )
+        return {"url": url, "slug": slug, "ingredients_improved": ingredients_improved, "servings_set": servings_set}
 
     return {"url": url, "slug": slug}
