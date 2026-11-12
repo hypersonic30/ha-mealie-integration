@@ -16,6 +16,7 @@ from custom_components.mealie_hub.api import guess_servings
         ("This serves 6 people easily", 6.0),
         ("Yields nothing useful here", None),
         ("8 servings of pure joy", 8.0),
+        ("Für 2–3 Portionen: cremige Pasta", 3.0),  # a range picks the upper bound
         ("Kein Hinweis auf Mengen hier", None),
         ("", None),
         (None, None),

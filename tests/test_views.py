@@ -145,11 +145,26 @@ async def test_import_never_overrides_an_existing_servings_value(hass, setup_ent
     assert not any(c[0] == "PATCH" and "recipeServings" in c[2] for c in aioclient_mock.mock_calls)
 
 
+def _social_created_recipe(slug):
+    """Social-to-Mealie's real response shape (confirmed from its source): a
+    hand-built {name, description, imageUrl, url} object with NO slug field at
+    all — the slug only exists as the last path segment of `url`. Live bug: our
+    code used to read a (nonexistent) top-level `slug` key, which meant every
+    single Social-to-Mealie import silently skipped all post-import work, with
+    nothing logged (no exception — `if slug:` was just always False)."""
+    return {
+        "name": slug,
+        "description": "",
+        "imageUrl": f"{MEALIE}/api/media/recipes/abc/images/original.webp",
+        "url": f"{MEALIE}/g/home/r/{slug}",
+    }
+
+
 async def test_import_instagram_goes_to_social(hass, setup_entry, hass_client, aioclient_mock):
     _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(
         f"{SOCIAL}/api/get-url",
-        json={"createdRecipe": {"slug": "insta-soup"}, "progress": "done"},
+        json={"createdRecipe": _social_created_recipe("insta-soup"), "progress": "done"},
     )
     _allow_tag_strip(aioclient_mock, "insta-soup")
     client = await hass_client()
@@ -164,7 +179,7 @@ async def test_import_youtube_shorts_goes_to_social(hass, setup_entry, hass_clie
     _no_existing_recipe(aioclient_mock)
     aioclient_mock.post(
         f"{SOCIAL}/api/get-url",
-        json={"createdRecipe": {"slug": "short-soup"}, "progress": "done"},
+        json={"createdRecipe": _social_created_recipe("short-soup"), "progress": "done"},
     )
     _allow_tag_strip(aioclient_mock, "short-soup")
     client = await hass_client()
@@ -191,7 +206,7 @@ async def test_import_survives_social_to_mealies_mislabeled_json_response(
 
     async def _mislabeled_success(method, url, data):
         return _TextPlainJsonResponse(
-            method, url, json={"createdRecipe": {"slug": "insta-soup"}, "progress": "done"}
+            method, url, json={"createdRecipe": _social_created_recipe("insta-soup"), "progress": "done"}
         )
 
     aioclient_mock.post(f"{SOCIAL}/api/get-url", side_effect=_mislabeled_success)

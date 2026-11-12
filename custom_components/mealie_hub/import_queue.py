@@ -15,7 +15,7 @@ from typing import Any
 import aiohttp
 from homeassistant.core import HomeAssistant
 
-from .api import UpstreamError, mealie_client, needs_social, social_client
+from .api import UpstreamError, extract_social_slug, mealie_client, needs_social, social_client
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ async def _run_one(hass: HomeAssistant, url: str, force: bool) -> dict[str, Any]
             if client is None:
                 return {"url": url, "error": "social_not_configured"}
             result = await client.import_from_url(url)
-            slug = (result.get("createdRecipe") or {}).get("slug")
+            slug = extract_social_slug(result)
         else:
             result = await mealie.import_from_url(url)
             slug = result if isinstance(result, str) else result.get("slug")

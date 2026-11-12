@@ -68,6 +68,22 @@ def guess_servings(text: str) -> float | None:
     return None
 
 
+def extract_social_slug(result: dict) -> str | None:
+    """Social-to-Mealie's /api/get-url response never carries the created recipe's
+    slug directly — confirmed from its source: `createdRecipe` is a hand-built
+    {name, description, imageUrl, url} object, not the Mealie recipe itself. The
+    slug only shows up as the last path segment of `url` (".../g/<group>/r/<slug>"),
+    which meant every single Social-to-Mealie import silently skipped all of our
+    post-import work (tag strip, ingredient re-parse, servings guess) — `slug` was
+    always None, so `if slug:` never ran, with no exception and nothing logged."""
+    created = result.get("createdRecipe") or {}
+    path = urlsplit(created.get("url") or "").path
+    segments = [s for s in path.split("/") if s]
+    if len(segments) >= 2 and segments[-2] == "r":
+        return segments[-1]
+    return None
+
+
 def needs_social(url: str) -> bool:
     """True for links Mealie's own scraper cannot read (video platforms)."""
     try:
