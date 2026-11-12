@@ -161,9 +161,49 @@ class MealieClient:
             new_ingredients = [p["ingredient"] for p in parsed if p.get("ingredient")]
             if len(new_ingredients) != len(ingredients):
                 return  # a count mismatch means something unexpected happened; safer to leave as-is
+            await self._resolve_new_ingredient_refs(new_ingredients)
             await self._request("PATCH", f"/api/recipes/{slug}", json={"recipeIngredient": new_ingredients})
         except Exception:  # noqa: BLE001 - deliberately broad, see docstring
             _LOGGER.warning("Re-parsing ingredients failed for %s", slug, exc_info=True)
+
+    async def _resolve_new_ingredient_refs(self, ingredients: list[dict]) -> None:
+        """The parser returns a brand-new food/unit (id=None) for anything not already
+        in Mealie's database — but Mealie's own recipe-PATCH endpoint can't create those
+        on the fly (confirmed live: it raises a server-side ValueError/HTTP 500 for any
+        food or unit without an id, silently discarding the whole re-parse under the
+        broad except above). So we create them ourselves through their own endpoints
+        first and patch in the resulting id, exactly as Mealie's own UI would."""
+        food_cache: dict[str, str] = {}
+        unit_cache: dict[str, str] = {}
+        for ingredient in ingredients:
+            food = ingredient.get("food")
+            if food and not food.get("id"):
+                food["id"] = await self._resolve_ingredient_ref("/api/foods", food["name"], food_cache)
+            unit = ingredient.get("unit")
+            if unit and not unit.get("id"):
+                unit["id"] = await self._resolve_ingredient_ref("/api/units", unit["name"], unit_cache)
+
+    async def _resolve_ingredient_ref(self, path: str, name: str, cache: dict[str, str]) -> str:
+        """Creates a food/unit by name, or — if it already exists (409) — finds its id
+        via a search (the 409 response itself doesn't carry the existing id)."""
+        key = name.strip().lower()
+        if key in cache:
+            return cache[key]
+        try:
+            created = await self._request("POST", path, json={"name": name})
+            ref_id = created["id"]
+        except UpstreamError as err:
+            if err.status != 409:
+                raise
+            data = await self._request("GET", path, params={"search": name, "perPage": 50})
+            match = next(
+                (i for i in data.get("items", []) if i.get("name", "").strip().lower() == key), None
+            )
+            if match is None:
+                raise
+            ref_id = match["id"]
+        cache[key] = ref_id
+        return ref_id
 
     async def guess_and_set_servings(self, slug: str) -> None:
         """See `guess_servings` — a best-effort regex guess from the recipe's description,

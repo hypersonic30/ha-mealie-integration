@@ -47,6 +47,13 @@ def _no_existing_recipe(aioclient_mock):
     aioclient_mock.get(f"{MEALIE}/api/recipes", json={"items": []})
 
 
+async def _create_named_ref(method, url, data):
+    """Stands in for Mealie's own /api/foods or /api/units: hands back a made-up but
+    stable id for whatever name was posted — exactly what a brand-new food/unit needs
+    before it can be referenced from a recipe's ingredient list."""
+    return AiohttpClientMockResponse(method, url, json={"id": f"ref-{data['name']}", "name": data["name"]})
+
+
 def _allow_tag_strip(aioclient_mock, slug, *, description="", servings=0, ingredient_notes=None):
     """A successful import always gets its tags stripped (+ an empty-tag sweep), its
     ingredients re-parsed, and a servings guess attempted — all best-effort cleanup.
@@ -69,6 +76,10 @@ def _allow_tag_strip(aioclient_mock, slug, *, description="", servings=0, ingred
             f"{MEALIE}/api/parser/ingredients",
             json=[{"input": t, "ingredient": {"note": "", "quantity": 1, "food": {"name": t}, "display": t}} for t in notes],
         )
+        # Every parsed food here is brand-new (no id) — Mealie can't create those on
+        # the fly from the recipe PATCH itself (a real server-side bug), so the code
+        # under test must create each one through /api/foods first.
+        aioclient_mock.post(f"{MEALIE}/api/foods", side_effect=_create_named_ref)
 
 
 async def _run_import(hass, client, url, *, force=False):
@@ -110,8 +121,8 @@ async def test_import_reparses_ingredients_left_as_plain_notes(hass, setup_entry
     assert parse_call[2] == {"parser": "nlp", "ingredients": ["200g Mehl", "2 Eier"]}
     ingredient_patch = next(c for c in aioclient_mock.mock_calls if c[0] == "PATCH" and "recipeIngredient" in c[2])
     assert ingredient_patch[2]["recipeIngredient"] == [
-        {"note": "", "quantity": 1, "food": {"name": "200g Mehl"}, "display": "200g Mehl"},
-        {"note": "", "quantity": 1, "food": {"name": "2 Eier"}, "display": "2 Eier"},
+        {"note": "", "quantity": 1, "food": {"name": "200g Mehl", "id": "ref-200g Mehl"}, "display": "200g Mehl"},
+        {"note": "", "quantity": 1, "food": {"name": "2 Eier", "id": "ref-2 Eier"}, "display": "2 Eier"},
     ]
 
 
