@@ -264,10 +264,17 @@ class RecipeToShoppingListView(HomeAssistantView):
         self._hass = hass
 
     async def post(self, request: web.Request, recipe_id: str) -> web.Response:
+        body = await request.json() if request.body_exists else {}
+        try:
+            scale = float((body or {}).get("scale", 1))
+        except (TypeError, ValueError):
+            scale = 1.0
+        if scale <= 0:
+            scale = 1.0
         client = mealie_client(self._hass)
         try:
             list_id = await default_shopping_list_id(client)
-            result = await client.add_recipe_to_shopping_list(list_id, recipe_id)
+            result = await client.add_recipe_to_shopping_list(list_id, recipe_id, scale=scale)
         except NoShoppingListError:
             return web.json_response({"error": "no_shopping_list"}, status=404)
         except UpstreamError as err:

@@ -328,14 +328,18 @@ class MealieClient:
     async def shopping_list(self, list_id: str) -> Any:
         return await self._request("GET", f"/api/households/shopping/lists/{list_id}")
 
-    async def add_recipe_to_shopping_list(self, list_id: str, recipe_id: str) -> Any:
+    async def add_recipe_to_shopping_list(self, list_id: str, recipe_id: str, scale: float = 1.0) -> Any:
         # Mealie's wire format is camelCase per its source (a camelize alias
         # generator), but that is not confirmed live — both casings are sent
         # so an unverified guess here doesn't silently drop the field.
+        # `recipeIncrementQuantity` confirmed live (2026-11-12): it's a plain
+        # multiplier on the recipe's stored ingredient quantities, not a target
+        # servings count, and repeated calls merge into the existing list item
+        # by food rather than duplicating it.
         return await self._request(
             "POST",
             f"/api/households/shopping/lists/{list_id}/recipe",
-            json=[{"recipeId": recipe_id, "recipe_id": recipe_id}],
+            json=[{"recipeId": recipe_id, "recipe_id": recipe_id, "recipeIncrementQuantity": scale}],
         )
 
     async def set_shopping_item(self, item: dict) -> Any:

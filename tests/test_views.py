@@ -512,7 +512,29 @@ async def test_add_recipe_to_shopping_list(hass, setup_entry, hass_client, aiocl
     resp = await client.post("/api/mealie_hub/recipes/r1/shopping-list")
     assert resp.status == 200
     _, _, body, _ = aioclient_mock.mock_calls[-1]
-    assert body == [{"recipeId": "r1", "recipe_id": "r1"}]
+    assert body == [{"recipeId": "r1", "recipe_id": "r1", "recipeIncrementQuantity": 1.0}]
+
+
+async def test_add_recipe_to_shopping_list_scaled_for_a_chosen_servings_count(hass, setup_entry, hass_client, aioclient_mock):
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": [{"id": "l1"}]})
+    aioclient_mock.post(f"{MEALIE}/api/households/shopping/lists/l1/recipe", json={"id": "l1"})
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/recipes/r1/shopping-list", json={"scale": 1.5})
+    assert resp.status == 200
+    _, _, body, _ = aioclient_mock.mock_calls[-1]
+    assert body == [{"recipeId": "r1", "recipe_id": "r1", "recipeIncrementQuantity": 1.5}]
+
+
+async def test_add_recipe_to_shopping_list_rejects_a_bogus_scale(hass, setup_entry, hass_client, aioclient_mock):
+    """A zero/negative/non-numeric scale falls back to 1 instead of asking Mealie to
+    add nothing (or subtract), which the actual card can't produce but a stray request shouldn't either."""
+    aioclient_mock.get(f"{MEALIE}/api/households/shopping/lists", json={"items": [{"id": "l1"}]})
+    aioclient_mock.post(f"{MEALIE}/api/households/shopping/lists/l1/recipe", json={"id": "l1"})
+    client = await hass_client()
+    resp = await client.post("/api/mealie_hub/recipes/r1/shopping-list", json={"scale": -2})
+    assert resp.status == 200
+    _, _, body, _ = aioclient_mock.mock_calls[-1]
+    assert body == [{"recipeId": "r1", "recipe_id": "r1", "recipeIncrementQuantity": 1.0}]
 
 
 async def test_delete_shopping_item(hass, setup_entry, hass_client, aioclient_mock):
